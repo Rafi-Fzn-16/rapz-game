@@ -116,6 +116,8 @@
         background-position: -110px 0;
         z-index: 2000;
         transform: scale(1.4);
+        transition:
+          transition: transform 0.08s ease-out;
       }
       #cloud {
         background-size: auto 100%;
@@ -792,7 +794,12 @@ body {
           this.volume = 1;
           this.destination.connect(this.audioCtx.destination);
 
+          this.engineGain = this.audioCtx.createGain();
+          this.engineGain.gain.value = 0.15;
+          this.engineGain.connect(this.destination);
+
           this.files = {};
+          this.engineSource = null;
 
           let _self = this;
           this.load(ASSETS.AUDIO.theme, "theme", function (key) {
@@ -800,7 +807,7 @@ body {
             source.buffer = _self.files[key];
 
             let gainNode = _self.audioCtx.createGain();
-            gainNode.gain.value = 0.6;
+            gainNode.gain.value = 0.4;
             source.connect(gainNode);
             gainNode.connect(_self.destination);
 
@@ -821,10 +828,46 @@ body {
           if (this.files[key]) {
             let source = this.audioCtx.createBufferSource();
             source.buffer = this.files[key];
-            source.connect(this.destination);
+            
+            let gainNode = this.audioCtx.createGain();
+
+            if (key === "honk")
+              gainNode.gain.value = 1.25;
+            else
+              gainNode.gain.value = 1.0;
+
+            source.connect(gainNode);
+            gainNode.connect(this.destination);
+            
             if (pitch) source.detune.value = pitch;
             source.start(0);
           } else this.load(key, () => this.play(key));
+        }
+
+        startEngine() {
+          if (this.engineSource || !this.files.engine)
+            return;
+
+          const source =
+            this.audioCtx.createBufferSource();
+
+          source.buffer = this.files.engine;
+          source.loop = true;
+          source.connect(this.engineGain);
+          source.start(0);
+          this.engineSource = source;
+        }
+
+        updateEngine(speed) {
+
+          if (!this.engineSource)
+            return;
+
+          this.engineSource.playbackRate.value =
+            0.55 + (speed / maxSpeed) * 1.45;
+
+          this.engineGain.gain.value =
+            0.50 + (speed / maxSpeed) * 2.00;
         }
 
         load(src, key, callback) {
@@ -833,14 +876,15 @@ body {
           request.open("GET", src, true);
           request.responseType = "arraybuffer";
           request.onload = function () {
-            _self.audioCtx.decodeAudioData(
-              request.response,
-              function (beatportBuffer) {
-                _self.files[key] = beatportBuffer;
-                callback(key);
-              },
-              function () {}
-            );
+            _self.audioCtx.decodeAudioData(request.response)
+            .then((buffer) => {
+              console.log("Loaded:", key);
+              _self.files[key] = buffer;
+              callback(key);
+            })
+            .catch((err) => {
+              console.error("FAILED:", key, err);
+            });
           };
           request.send();
         }
@@ -994,6 +1038,8 @@ body {
               hero.style.display = "block";
               hud.style.display = "block";
 
+              audio.startEngine();
+
               audio.play("beep", 500);
 
               inGame = true;
@@ -1036,16 +1082,29 @@ body {
 
         if (KEYS.ArrowRight) {
           hero.style.backgroundPosition = "-220px 0";
+
+          if (speed > 120)
+            hero.style.transform = "scale(1.5) rotate(12deg)";
+          else
+            hero.style.transform = "scale(1.4) rotate(7deg)";
+
           steerMomentum += steerSpeed * step;
         }
 
         else if (KEYS.ArrowLeft) {
           hero.style.backgroundPosition = "0 0";
+
+          if (speed > 120)
+            hero.style.transform = "scale(1.5) rotate(-12deg)";
+          else
+            hero.style.transform = "scale(1.4) rotate(-7deg)";
+
           steerMomentum -= steerSpeed * step;
         }
 
         else {
           hero.style.backgroundPosition = "-110px 0";
+          hero.style.transform = "scale(1.4) rotate(0deg)";
         }
 
         steerMomentum *= steerSmooth;
@@ -1093,7 +1152,7 @@ body {
 
           home.style.display = "block";
           road.style.opacity = 0.4;
-          text.innerText = "C to INSERT COIN";
+          text.innerText = "INSERT COIN";
 
           highscores.push(lap.innerText);
           highscores.sort();
@@ -1112,7 +1171,7 @@ body {
         }
 
         // sound
-        if (speed > 0) audio.play("engine", speed * 4);
+        audio.updateEngine(speed);
 
         // draw cloud
         cloud.style.backgroundPosition = `${
@@ -1137,8 +1196,23 @@ body {
             isCollide(playerX * offsetRatio + LANE.B, 0.5, car.lane, 0.5)
           ) {
             speed = Math.min(hitSpeed, speed);
-            if (inGame) audio.play("honk");
-          }
+            game.animate(
+            [
+              { transform: "translate(-50%, -50%) translateX(-8px)" },
+              { transform: "translate(-50%, -50%) translateX(8px)" },
+              { transform: "translate(-50%, -50%) translateX(-5px)" },
+              { transform: "translate(-50%, -50%) translateX(0px)" }
+            ],
+            {
+              duration: 180
+            }
+            );
+            if (inGame) {
+              const crashPitch =
+                -500 + (speed * 25);
+              audio.play("honk", crashPitch);
+            }
+        }
         }
 
         // draw road
@@ -1271,7 +1345,7 @@ body {
 
         for (let line of lines) line.curve = line.y = 0;
 
-        text.innerText = "C to INSERT COIN";
+        text.innerText = "INSERT COIN";
         text.classList.add("blink");
 
         road.style.opacity = 0.4;
@@ -1385,12 +1459,20 @@ function bindButton(buttonId, keyCode) {
   const btn = document.getElementById(buttonId);
 
   btn.addEventListener("touchstart", (e) => {
-    e.preventDefault();
+
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+
     KEYS[keyCode] = true;
   });
 
   btn.addEventListener("touchend", (e) => {
-    e.preventDefault();
+
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+
     KEYS[keyCode] = false;
   });
 }
@@ -1449,6 +1531,8 @@ document.getElementById("coinBtn").addEventListener("touchstart", (e) => {
       road.style.opacity = 1;
       hero.style.display = "block";
       hud.style.display = "block";
+
+      audio.startEngine();
 
       audio.play("beep", 500);
 
